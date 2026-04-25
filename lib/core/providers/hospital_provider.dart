@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import '../models/hospital_model.dart';
 
@@ -154,19 +155,19 @@ class HospitalProvider extends ChangeNotifier {
     final dLat = _degreesToRadians(lat2 - lat1);
     final dLon = _degreesToRadians(lon2 - lon1);
     
-    final a = (dLat / 2).sin() * (dLat / 2).sin() +
-        _degreesToRadians(lat1).cos() *
-        _degreesToRadians(lat2).cos() *
-        (dLon / 2).sin() *
-        (dLon / 2).sin();
+    final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(_degreesToRadians(lat1)) *
+        math.cos(_degreesToRadians(lat2)) *
+        math.sin(dLon / 2) *
+        math.sin(dLon / 2);
     
-    final c = 2 * (a.sqrt()).atan2((1 - a).sqrt());
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
     
     return earthRadiusKm * c;
   }
 
   double _degreesToRadians(double degrees) {
-    return degrees * (3.141592653589793 / 180.0);
+    return degrees * (math.pi / 180.0);
   }
 
   void clearHospitals() {

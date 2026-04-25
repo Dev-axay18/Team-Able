@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head><title>Supabase Debug</title></head>
+<body>
+<h2>Supabase Connection Test</h2>
+<pre id="out" style="font-family:monospace;font-size:13px;background:#f1f5f9;padding:20px;border-radius:8px;white-space:pre-wrap;"></pre>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const db = supabase.createClient(
+  'https://zkmawrdnmhdgmthxfmnl.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InprbWF3cmRubWhkZ210aHhmbW5sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwNjA4MTQsImV4cCI6MjA5MjYzNjgxNH0.ZsPqT6KOTigeXdA5xvTIFvltLEsgVDrMc8PMup2l3ak'
+);
+
+const out = document.getElementById('out');
+
+async function runTests() {
+  out.textContent = 'Running tests...\n\n';
+
+  // Test 1: hospitals
+  const t1 = await db.from('hospitals').select('id, name, total_beds, available_beds, icu_available, emergency_ready_ward').limit(5);
+  out.textContent += '=== HOSPITALS ===\n';
+  out.textContent += 'error : ' + JSON.stringify(t1.error) + '\n';
+  out.textContent += 'data  : ' + JSON.stringify(t1.data, null, 2) + '\n\n';
+
+  // Test 2: ambulance_drivers
+  const t2 = await db.from('ambulance_drivers').select('id, name, mobile_number, is_approved, associated_hospital_id').limit(5);
+  out.textContent += '=== AMBULANCE DRIVERS ===\n';
+  out.textContent += 'error : ' + JSON.stringify(t2.error) + '\n';
+  out.textContent += 'data  : ' + JSON.stringify(t2.data, null, 2) + '\n\n';
+
+  // Test 3: users
+  const t3 = await db.from('users').select('id, name, mobile_number, blood_type, gender, is_mobile_verified').limit(5);
+  out.textContent += '=== USERS / PATIENTS ===\n';
+  out.textContent += 'error : ' + JSON.stringify(t3.error) + '\n';
+  out.textContent += 'data  : ' + JSON.stringify(t3.data, null, 2) + '\n\n';
+
+  out.textContent += '=== DONE ===\n';
+}
+
+runTests();
+</script>
+</body>
+</html>

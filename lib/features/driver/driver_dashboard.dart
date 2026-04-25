@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/providers/auth_provider.dart';
 import '../auth/login_screen.dart';
+import 'driver_map_screen.dart';
 
 class DriverDashboard extends StatefulWidget {
   const DriverDashboard({super.key});
@@ -443,10 +444,15 @@ class _DriverDashboardState extends State<DriverDashboard> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildNavItem(Icons.home, 'HOME', true),
-              _buildNavItem(Icons.map_outlined, 'MAP', false),
-              _buildNavItem(Icons.description_outlined, 'RECORDS', false),
-              _buildNavItem(Icons.person_outline, 'PROFILE', false),
+              _buildNavItem(Icons.home, 'HOME', true, () {}),
+              _buildNavItem(Icons.map_outlined, 'MAP', false, () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const DriverMapScreen()),
+                );
+              }),
+              _buildNavItem(Icons.description_outlined, 'RECORDS', false, () {}),
+              _buildNavItem(Icons.person_outline, 'PROFILE', false, () {}),
             ],
           ),
         ),
@@ -454,25 +460,28 @@ class _DriverDashboardState extends State<DriverDashboard> {
     );
   }
 
-  Widget _buildNavItem(IconData icon, String label, bool isActive) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(
-          icon,
-          color: isActive ? const Color(0xFF1565C0) : const Color(0xFF9E9E9E),
-          size: 24,
-        ),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
+  Widget _buildNavItem(IconData icon, String label, bool isActive, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            icon,
             color: isActive ? const Color(0xFF1565C0) : const Color(0xFF9E9E9E),
+            size: 24,
           ),
-        ),
-      ],
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: isActive ? const Color(0xFF1565C0) : const Color(0xFF9E9E9E),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

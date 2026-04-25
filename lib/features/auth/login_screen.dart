@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/otp_service.dart';
 import '../home/main_navigation.dart';
+import '../driver/driver_dashboard.dart';
 import 'role_selection_screen.dart';
 
 // ── Country model ────────────────────────────────────────────────────────────
@@ -54,6 +55,9 @@ class _LoginScreenState extends State<LoginScreen> {
 
   // Holds the generated OTP for dev banner display
   String? _devOtpHint;
+  
+  // Role selection
+  String _selectedRole = 'Patient';
 
   @override
   void dispose() {
@@ -124,10 +128,18 @@ class _LoginScreenState extends State<LoginScreen> {
         final auth = context.read<AuthProvider>();
         final success = await auth.login(_fullPhone, 'otp_verified');
         if (success && mounted) {
-          Navigator.of(context).pushAndRemoveUntil(
-            MaterialPageRoute(builder: (_) => const MainNavigation()),
-            (route) => false,
-          );
+          // Navigate based on selected role
+          if (_selectedRole == 'Driver') {
+            Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(builder: (_) => const DriverDashboard()),
+              (route) => false,
+            );
+          } else {
+            Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(builder: (_) => const MainNavigation()),
+              (route) => false,
+            );
+          }
         }
         break;
 
@@ -374,6 +386,64 @@ class _LoginScreenState extends State<LoginScreen> {
                           fontSize: 13,
                           color: Color(0xFF6B7280),
                           height: 1.5,
+                        ),
+                      ),
+
+                      const SizedBox(height: 24),
+
+                      // ── Role Selection ────────────────────────────────
+                      const Text(
+                        'Login As',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1A1A2E),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF3F4F6),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            value: _selectedRole,
+                            isExpanded: true,
+                            icon: const Icon(Icons.keyboard_arrow_down_rounded,
+                                color: Color(0xFF6B7280)),
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF1A1A2E),
+                            ),
+                            items: ['Patient', 'Driver'].map((String role) {
+                              return DropdownMenuItem<String>(
+                                value: role,
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      role == 'Patient'
+                                          ? Icons.person_outline
+                                          : Icons.local_shipping_outlined,
+                                      color: const Color(0xFF1565C0),
+                                      size: 20,
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Text(role),
+                                  ],
+                                ),
+                              );
+                            }).toList(),
+                            onChanged: (String? newValue) {
+                              if (newValue != null) {
+                                setState(() {
+                                  _selectedRole = newValue;
+                                });
+                              }
+                            },
+                          ),
                         ),
                       ),
 

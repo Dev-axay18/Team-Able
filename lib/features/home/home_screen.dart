@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/cpin_service.dart';
+import 'ambulance_severity_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -780,11 +781,13 @@ class _HomeScreenState extends State<HomeScreen>
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
       child: GestureDetector(
         onTap: () {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Requesting ambulance to your location...'),
-              backgroundColor: Color(0xFFD32F2F),
-              behavior: SnackBarBehavior.floating,
+          // Navigate to severity selection screen
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => AmbulanceSeverityScreen(
+                currentLocation: _currentLocation,
+              ),
             ),
           );
         },

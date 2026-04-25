@@ -8,6 +8,7 @@ import 'package:geolocator_android/geolocator_android.dart';
 import 'package:provider/provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
+import '../../core/services/cpin_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -23,6 +24,8 @@ class _HomeScreenState extends State<HomeScreen>
   late Animation<double> _sosPulse;
   bool _sosHolding = false;
   Timer? _sosTimer;
+  bool _sosActive = false;
+  SosSession? _activeSosSession;
 
   // Location
   LatLng _currentLocation = const LatLng(19.0760, 72.8777); // Mumbai default
@@ -243,7 +246,7 @@ class _HomeScreenState extends State<HomeScreen>
     setState(() => _sosHolding = true);
     HapticFeedback.heavyImpact();
     _sosTimer = Timer(const Duration(seconds: 3), () {
-      _triggerSOS();
+      _showCPinDialog();
     });
   }
 
@@ -252,61 +255,304 @@ class _HomeScreenState extends State<HomeScreen>
     _sosTimer?.cancel();
   }
 
-  void _triggerSOS() {
-    HapticFeedback.vibrate();
+  // ── Step 1: Show C-PIN dialog ─────────────────────────────────────────────
+  void _showCPinDialog() {
+    HapticFeedback.mediumImpact();
+    final user = context.read<AuthProvider>().user;
+    if (user == null) return;
+
+    final List<TextEditingController> pinControllers =
+        List.generate(4, (_) => TextEditingController());
+    final List<FocusNode> pinFocusNodes =
+        List.generate(4, (_) => FocusNode());
+    bool isVerifying = false;
+    String? errorMsg;
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        backgroundColor: Colors.white,
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 72,
-              height: 72,
-              decoration: const BoxDecoration(
-                color: Color(0xFFD32F2F),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.emergency_rounded,
-                  color: Colors.white, size: 40),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'SOS Activated!',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w700,
-                color: Color(0xFF1A1A2E),
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Emergency services have been alerted.\nHelp is on the way.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey, fontSize: 14),
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFD32F2F),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            Future<void> verifyPin() async {
+              final entered =
+                  pinControllers.map((c) => c.text).join();
+              if (entered.length < 4) return;
+
+              setDialogState(() {
+                isVerifying = true;
+                errorMsg = null;
+              });
+
+              final result = await CPinService.instance
+                  .verifyPin(user.id, entered);
+
+              if (!ctx.mounted) return;
+
+              switch (result) {
+                case CPinResult.success:
+                  Navigator.of(ctx).pop();
+                  _dispatchAmbulance(user);
+                  break;
+
+                case CPinResult.invalid:
+                  HapticFeedback.vibrate();
+                  for (final c in pinControllers) c.clear();
+                  pinFocusNodes[0].requestFocus();
+                  setDialogState(() {
+                    isVerifying = false;
+                    errorMsg = 'Incorrect C-PIN. Please try again.';
+                  });
+                  break;
+
+                case CPinResult.userNotFound:
+                  Navigator.of(ctx).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('User not found. Please re-login.'),
+                      backgroundColor: Color(0xFFD32F2F),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                  break;
+              }
+            }
+
+            return Dialog(
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24)),
+              backgroundColor: Colors.white,
+              child: Padding(
+                padding: const EdgeInsets.all(28),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Red shield icon
+                    Container(
+                      width: 64,
+                      height: 64,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFFFEBEE),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.shield_rounded,
+                        color: Color(0xFFD32F2F),
+                        size: 34,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    const Text(
+                      'Enter C-PIN',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF1A1A2E),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Enter your 4-digit security PIN\nto dispatch emergency services.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Color(0xFF6B7280),
+                        height: 1.5,
+                      ),
+                    ),
+
+                    const SizedBox(height: 28),
+
+                    // 4 PIN boxes
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(4, (i) {
+                        return Container(
+                          width: 56,
+                          height: 62,
+                          margin: EdgeInsets.only(right: i < 3 ? 12 : 0),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF3F4F6),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: errorMsg != null
+                                  ? const Color(0xFFD32F2F)
+                                  : pinFocusNodes[i].hasFocus
+                                      ? const Color(0xFFD32F2F)
+                                      : Colors.transparent,
+                              width: 2,
+                            ),
+                          ),
+                          child: TextField(
+                            controller: pinControllers[i],
+                            focusNode: pinFocusNodes[i],
+                            keyboardType: TextInputType.number,
+                            textAlign: TextAlign.center,
+                            maxLength: 1,
+                            obscureText: true,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                            ],
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.w900,
+                              color: Color(0xFF1A1A2E),
+                            ),
+                            decoration: const InputDecoration(
+                              border: InputBorder.none,
+                              counterText: '',
+                            ),
+                            onChanged: (val) {
+                              setDialogState(() => errorMsg = null);
+                              if (val.isNotEmpty && i < 3) {
+                                pinFocusNodes[i + 1].requestFocus();
+                              }
+                              if (val.isEmpty && i > 0) {
+                                pinFocusNodes[i - 1].requestFocus();
+                              }
+                              // Auto verify when all 4 filled
+                              final full = pinControllers
+                                  .map((c) => c.text)
+                                  .join();
+                              if (full.length == 4) {
+                                verifyPin();
+                              }
+                            },
+                          ),
+                        );
+                      }),
+                    ),
+
+                    // Error message
+                    if (errorMsg != null) ...[
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.error_outline_rounded,
+                              color: Color(0xFFD32F2F), size: 14),
+                          const SizedBox(width: 6),
+                          Text(
+                            errorMsg!,
+                            style: const TextStyle(
+                              color: Color(0xFFD32F2F),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+
+                    const SizedBox(height: 24),
+
+                    // Verify button
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: isVerifying ? null : verifyPin,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFD32F2F),
+                          padding:
+                              const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14)),
+                          elevation: 0,
+                        ),
+                        child: isVerifying
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2.5,
+                                    color: Colors.white),
+                              )
+                            : const Text(
+                                'Verify & Dispatch',
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white,
+                                ),
+                              ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 12),
+
+                    // Cancel
+                    TextButton(
+                      onPressed: () {
+                        Navigator.of(ctx).pop();
+                        setState(() => _sosHolding = false);
+                      },
+                      child: const Text(
+                        'Cancel',
+                        style: TextStyle(
+                          color: Color(0xFF6B7280),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                child: const Text('OK',
-                    style: TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.w600)),
               ),
-            ),
-          ],
-        ),
-      ),
+            );
+          },
+        );
+      },
+    );
+
+    // Auto-focus first box
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (pinFocusNodes[0].canRequestFocus) {
+        pinFocusNodes[0].requestFocus();
+      }
+    });
+  }
+
+  // ── Step 2: Dispatch ambulance after PIN verified ─────────────────────────
+  void _dispatchAmbulance(dynamic user) {
+    HapticFeedback.vibrate();
+
+    final session = CPinService.instance.createSosSession(
+      userId: user.id,
+      userName: user.name,
+      latitude: _currentLocation.latitude,
+      longitude: _currentLocation.longitude,
+    );
+
+    setState(() {
+      _sosActive = true;
+      _activeSosSession = session;
+    });
+
+    _showDispatchingDialog();
+  }
+
+  // ── Step 3: Show dispatching → driver assigned flow ───────────────────────
+  void _showDispatchingDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return _DispatchingDialog(
+          session: _activeSosSession!,
+          currentLocation: _currentLocation,
+          onCancel: () {
+            final user = context.read<AuthProvider>().user;
+            if (user != null) {
+              CPinService.instance.cancelSos(user.id);
+            }
+            setState(() {
+              _sosActive = false;
+              _activeSosSession = null;
+            });
+            Navigator.of(ctx).pop();
+          },
+        );
+      },
     );
   }
 
@@ -436,13 +682,18 @@ class _HomeScreenState extends State<HomeScreen>
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 36),
                 decoration: BoxDecoration(
-                  color: _sosHolding
-                      ? const Color(0xFFB71C1C)
-                      : const Color(0xFFD32F2F),
+                  color: _sosActive
+                      ? const Color(0xFF7B1FA2)
+                      : _sosHolding
+                          ? const Color(0xFFB71C1C)
+                          : const Color(0xFFD32F2F),
                   borderRadius: BorderRadius.circular(20),
                   boxShadow: [
                     BoxShadow(
-                      color: const Color(0xFFD32F2F).withOpacity(0.4),
+                      color: (_sosActive
+                              ? const Color(0xFF7B1FA2)
+                              : const Color(0xFFD32F2F))
+                          .withOpacity(0.4),
                       blurRadius: 20,
                       offset: const Offset(0, 8),
                     ),
@@ -450,7 +701,6 @@ class _HomeScreenState extends State<HomeScreen>
                 ),
                 child: Column(
                   children: [
-                    // Asterisk / medical cross
                     const Text(
                       '✱',
                       style: TextStyle(
@@ -460,9 +710,9 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                     ),
                     const SizedBox(height: 8),
-                    const Text(
-                      'SOS',
-                      style: TextStyle(
+                    Text(
+                      _sosActive ? 'SOS ACTIVE' : 'SOS',
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 32,
                         fontWeight: FontWeight.w900,
@@ -471,14 +721,49 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      _sosHolding
-                          ? 'Activating...'
-                          : 'Hold for 3 seconds to alert emergency services',
+                      _sosActive
+                          ? 'Ambulance dispatched • Location shared'
+                          : _sosHolding
+                              ? 'Activating...'
+                              : 'Hold for 3 seconds to alert emergency services',
                       style: TextStyle(
                         color: Colors.white.withOpacity(0.85),
                         fontSize: 13,
                       ),
                     ),
+                    if (_sosActive) ...[
+                      const SizedBox(height: 12),
+                      GestureDetector(
+                        onTap: () {
+                          final user = context.read<AuthProvider>().user;
+                          if (user != null) {
+                            CPinService.instance.cancelSos(user.id);
+                          }
+                          setState(() {
+                            _sosActive = false;
+                            _activeSosSession = null;
+                          });
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 20, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                                color: Colors.white.withOpacity(0.5)),
+                          ),
+                          child: const Text(
+                            'Cancel SOS',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -945,4 +1230,282 @@ class _QuickActionCard extends StatelessWidget {
       ),
     );
   }
+}
+
+// ── Dispatching Dialog Widget ─────────────────────────────────────────────────
+class _DispatchingDialog extends StatefulWidget {
+  final SosSession session;
+  final LatLng currentLocation;
+  final VoidCallback onCancel;
+
+  const _DispatchingDialog({
+    required this.session,
+    required this.currentLocation,
+    required this.onCancel,
+  });
+
+  @override
+  State<_DispatchingDialog> createState() => _DispatchingDialogState();
+}
+
+class _DispatchingDialogState extends State<_DispatchingDialog> {
+  // Simulated dispatch stages
+  int _stage = 0;
+  // 0 = searching driver
+  // 1 = driver found
+  // 2 = en route
+  Timer? _stageTimer;
+
+  final List<_DispatchStage> _stages = const [
+    _DispatchStage(
+      icon: Icons.search_rounded,
+      color: Color(0xFFFFA726),
+      title: 'Finding nearest ambulance...',
+      subtitle: 'Searching drivers in your area',
+    ),
+    _DispatchStage(
+      icon: Icons.local_shipping_rounded,
+      color: Color(0xFF1565C0),
+      title: 'Driver Assigned!',
+      subtitle: 'Ambulance #KA-01-AB-1234 • Ravi Kumar',
+    ),
+    _DispatchStage(
+      icon: Icons.directions_car_rounded,
+      color: Color(0xFF43A047),
+      title: 'Ambulance En Route',
+      subtitle: 'Estimated arrival: 4 minutes',
+    ),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    // Auto-advance stages to simulate real dispatch
+    _stageTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _stage = 1);
+      _stageTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted) setState(() => _stage = 2);
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _stageTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final stage = _stages[_stage];
+
+    return Dialog(
+      shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      backgroundColor: Colors.white,
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Animated status icon
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 400),
+              child: Container(
+                key: ValueKey(_stage),
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  color: stage.color.withOpacity(0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(stage.icon, color: stage.color, size: 36),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // SOS ID
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+              decoration: BoxDecoration(
+                color: const Color(0xFFD32F2F).withOpacity(0.08),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                'SOS ID: ${widget.session.sessionId.substring(4, 17)}',
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFFD32F2F),
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 14),
+
+            // Status title
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 300),
+              child: Text(
+                stage.title,
+                key: ValueKey('title_$_stage'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF1A1A2E),
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 6),
+
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 300),
+              child: Text(
+                stage.subtitle,
+                key: ValueKey('sub_$_stage'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: Color(0xFF6B7280),
+                  height: 1.4,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Progress steps
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(3, (i) {
+                return AnimatedContainer(
+                  duration: const Duration(milliseconds: 300),
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  width: i == _stage ? 24 : 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: i <= _stage
+                        ? const Color(0xFFD32F2F)
+                        : const Color(0xFFE5E7EB),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                );
+              }),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Location being shared info
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE8F5E9),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.location_on_rounded,
+                      color: Color(0xFF43A047), size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Live location shared with driver',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF2E7D32),
+                          ),
+                        ),
+                        Text(
+                          '${widget.currentLocation.latitude.toStringAsFixed(5)}, '
+                          '${widget.currentLocation.longitude.toStringAsFixed(5)}',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Color(0xFF43A047),
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF43A047),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Done / Cancel buttons
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: widget.onCancel,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFFD32F2F),
+                      side: const BorderSide(color: Color(0xFFD32F2F)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text(
+                      'Cancel SOS',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF43A047),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: const Text(
+                      'Track',
+                      style: TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DispatchStage {
+  final IconData icon;
+  final Color color;
+  final String title;
+  final String subtitle;
+
+  const _DispatchStage({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.subtitle,
+  });
 }

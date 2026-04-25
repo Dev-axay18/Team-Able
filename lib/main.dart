@@ -5,6 +5,7 @@ import 'core/theme/app_theme.dart';
 import 'core/providers/auth_provider.dart';
 import 'core/providers/appointment_provider.dart';
 import 'core/providers/doctor_provider.dart';
+import 'core/providers/hospital_provider.dart';
 import 'features/splash/splash_screen.dart';
 
 void main() async {
@@ -32,6 +33,7 @@ class JeevanPathApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => AuthProvider()),
         ChangeNotifierProvider(create: (_) => DoctorProvider()),
         ChangeNotifierProvider(create: (_) => AppointmentProvider()),
+        ChangeNotifierProvider(create: (_) => HospitalProvider()),
       ],
       child: MaterialApp(
         title: 'JeevanPath',

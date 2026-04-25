@@ -10,6 +10,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/cpin_service.dart';
 import 'ambulance_severity_screen.dart';
+import '../hospitals/hospitals_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -877,7 +878,16 @@ class _HomeScreenState extends State<HomeScreen>
               iconBg: const Color(0xFF1565C0),
               title: 'Find Hospital',
               subtitle: 'View nearby ERs',
-              onTap: () {},
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => HospitalsScreen(
+                      currentLocation: _currentLocation,
+                    ),
+                  ),
+                );
+              },
             ),
           ),
           const SizedBox(width: 14),

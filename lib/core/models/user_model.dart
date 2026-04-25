@@ -11,6 +11,7 @@ class UserModel {
   final List<String> conditions;
   final String? emergencyContact;
   final String? emergencyPhone;
+  final String? address;
 
   UserModel({
     required this.id,
@@ -25,6 +26,7 @@ class UserModel {
     this.conditions = const [],
     this.emergencyContact,
     this.emergencyPhone,
+    this.address,
   });
 
   factory UserModel.fromJson(Map<String, dynamic> json) {
@@ -41,6 +43,7 @@ class UserModel {
       conditions: List<String>.from(json['conditions'] ?? []),
       emergencyContact: json['emergencyContact'],
       emergencyPhone: json['emergencyPhone'],
+      address: json['address'],
     );
   }
 
@@ -58,6 +61,7 @@ class UserModel {
       'conditions': conditions,
       'emergencyContact': emergencyContact,
       'emergencyPhone': emergencyPhone,
+      'address': address,
     };
   }
 
@@ -74,6 +78,7 @@ class UserModel {
     List<String>? conditions,
     String? emergencyContact,
     String? emergencyPhone,
+    String? address,
   }) {
     return UserModel(
       id: id ?? this.id,
@@ -88,6 +93,7 @@ class UserModel {
       conditions: conditions ?? this.conditions,
       emergencyContact: emergencyContact ?? this.emergencyContact,
       emergencyPhone: emergencyPhone ?? this.emergencyPhone,
+      address: address ?? this.address,
     );
   }
 }

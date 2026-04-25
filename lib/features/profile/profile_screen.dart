@@ -3,6 +3,10 @@ import 'package:provider/provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../auth/login_screen.dart';
+import 'edit_profile_screen.dart';
+import 'medical_records_screen.dart';
+import 'notifications_screen.dart';
+import 'payment_methods_screen.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -219,22 +223,50 @@ class ProfileScreen extends StatelessWidget {
                         _MenuItem(
                           icon: Icons.person_outline_rounded,
                           label: 'Edit Profile',
-                          onTap: () {},
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const EditProfileScreen(),
+                              ),
+                            );
+                          },
                         ),
                         _MenuItem(
                           icon: Icons.medical_information_rounded,
                           label: 'Medical Records',
-                          onTap: () {},
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const MedicalRecordsScreen(),
+                              ),
+                            );
+                          },
                         ),
                         _MenuItem(
                           icon: Icons.notifications_outlined,
                           label: 'Notifications',
-                          onTap: () {},
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const NotificationsScreen(),
+                              ),
+                            );
+                          },
                         ),
                         _MenuItem(
                           icon: Icons.payment_rounded,
                           label: 'Payment Methods',
-                          onTap: () {},
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const PaymentMethodsScreen(),
+                              ),
+                            );
+                          },
                         ),
                       ],
                     ),

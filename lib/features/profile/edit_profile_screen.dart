@@ -528,9 +528,8 @@ class _CPinUpdateDialogState extends State<_CPinUpdateDialog> {
     // Simulate API call to update PIN
     await Future.delayed(const Duration(seconds: 1));
     
-    // Update PIN in service
-    CPinService.instance.generateAndStorePin(widget.userId);
-    // In real app, you'd call an API to update the PIN in the database
+    // Update PIN in service with the actual entered pin
+    CPinService.instance.updatePin(widget.userId, pin);
     
     if (mounted) {
       Navigator.pop(context, pin);

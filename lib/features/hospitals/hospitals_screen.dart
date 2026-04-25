@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
+import 'package:geolocator/geolocator.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/hospital_provider.dart';
 import '../../core/models/hospital_model.dart';
 import 'package:latlong2/latlong.dart';
+import 'full_screen_hospital_map.dart';
 
 class HospitalsScreen extends StatefulWidget {
   final LatLng currentLocation;
@@ -19,17 +22,77 @@ class HospitalsScreen extends StatefulWidget {
 }
 
 class _HospitalsScreenState extends State<HospitalsScreen> {
+  bool _showMapView = false;
+  gmaps.GoogleMapController? _mapController;
+  LatLng _currentLocation;
+
+  _HospitalsScreenState() : _currentLocation = const LatLng(19.0760, 72.8777);
+
   @override
   void initState() {
     super.initState();
+    _currentLocation = widget.currentLocation;
+    _startLocationTracking();
     // Fetch hospitals when screen loads
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<HospitalProvider>().fetchNearbyHospitals(
-            widget.currentLocation.latitude,
-            widget.currentLocation.longitude,
+            _currentLocation.latitude,
+            _currentLocation.longitude,
             radiusKm: 5.0,
           );
     });
+  }
+
+  void _startLocationTracking() async {
+    try {
+      // Check permission
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) return;
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) return;
+      }
+
+      if (permission == LocationPermission.deniedForever) return;
+
+      // Get current location
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 10),
+      );
+
+      if (mounted) {
+        setState(() {
+          _currentLocation = LatLng(position.latitude, position.longitude);
+        });
+      }
+
+      // Start location stream
+      const locationSettings = LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 10,
+      );
+
+      Geolocator.getPositionStream(locationSettings: locationSettings).listen(
+        (Position position) {
+          if (mounted) {
+            setState(() {
+              _currentLocation = LatLng(position.latitude, position.longitude);
+            });
+          }
+        },
+      );
+    } catch (e) {
+      print('Error tracking location: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _mapController?.dispose();
+    super.dispose();
   }
 
   Future<void> _makePhoneCall(String phoneNumber) async {
@@ -49,6 +112,265 @@ class _HospitalsScreenState extends State<HospitalsScreen> {
     if (await canLaunchUrl(launchUri)) {
       await launchUrl(launchUri, mode: LaunchMode.externalApplication);
     }
+  }
+
+  Widget _buildMapView(List<HospitalModel> hospitals) {
+    final userLocation = gmaps.LatLng(
+      _currentLocation.latitude,
+      _currentLocation.longitude,
+    );
+    
+    final markers = <gmaps.Marker>{};
+    
+    // Add user location marker (BLUE)
+    markers.add(
+      gmaps.Marker(
+        markerId: const gmaps.MarkerId('user_location'),
+        position: userLocation,
+        icon: gmaps.BitmapDescriptor.defaultMarkerWithHue(gmaps.BitmapDescriptor.hueBlue),
+        infoWindow: gmaps.InfoWindow(
+          title: '📍 Your Location',
+          snippet: 'Lat: ${_currentLocation.latitude.toStringAsFixed(4)}, Lng: ${_currentLocation.longitude.toStringAsFixed(4)}',
+        ),
+      ),
+    );
+
+    // Add hospital markers (RED)
+    for (var hospital in hospitals) {
+      markers.add(
+        gmaps.Marker(
+          markerId: gmaps.MarkerId('hospital_${hospital.id}'),
+          position: gmaps.LatLng(hospital.latitude, hospital.longitude),
+          icon: gmaps.BitmapDescriptor.defaultMarkerWithHue(gmaps.BitmapDescriptor.hueRed),
+          infoWindow: gmaps.InfoWindow(
+            title: hospital.name,
+            snippet: hospital.distance != null 
+                ? '${hospital.distance!.toStringAsFixed(1)} km away'
+                : null,
+          ),
+          onTap: () {
+            _showHospitalDetails(hospital);
+          },
+        ),
+      );
+    }
+
+    // Add circle around user (2km radius)
+    final circles = <gmaps.Circle>{
+      gmaps.Circle(
+        circleId: const gmaps.CircleId('user_zone'),
+        center: userLocation,
+        radius: 2000, // 2km
+        fillColor: const Color(0xFF1565C0).withOpacity(0.1),
+        strokeColor: const Color(0xFF1565C0),
+        strokeWidth: 2,
+      ),
+    };
+
+    return Stack(
+      children: [
+        // Google Map
+        gmaps.GoogleMap(
+          initialCameraPosition: gmaps.CameraPosition(
+            target: userLocation,
+            zoom: 13.0,
+          ),
+          onMapCreated: (gmaps.GoogleMapController controller) {
+            _mapController = controller;
+          },
+          markers: markers,
+          circles: circles,
+          myLocationEnabled: true,
+          myLocationButtonEnabled: false,
+          zoomControlsEnabled: false,
+          mapToolbarEnabled: false,
+        ),
+        
+        // Maximize button (top right)
+        Positioned(
+          top: 16,
+          right: 16,
+          child: FloatingActionButton(
+            heroTag: 'maximize',
+            mini: true,
+            backgroundColor: Colors.white,
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => FullScreenHospitalMap(
+                    currentLat: _currentLocation.latitude,
+                    currentLng: _currentLocation.longitude,
+                    hospitals: hospitals,
+                  ),
+                ),
+              );
+            },
+            child: const Icon(
+              Icons.fullscreen,
+              color: Color(0xFF1565C0),
+            ),
+          ),
+        ),
+        
+        // My location button (bottom right)
+        Positioned(
+          bottom: 16,
+          right: 16,
+          child: FloatingActionButton(
+            heroTag: 'my_location',
+            mini: true,
+            backgroundColor: Colors.white,
+            onPressed: () {
+              _mapController?.animateCamera(
+                gmaps.CameraUpdate.newLatLngZoom(userLocation, 14.0),
+              );
+            },
+            child: const Icon(
+              Icons.my_location,
+              color: Color(0xFF1565C0),
+            ),
+          ),
+        ),
+        
+        // Debug info (bottom left)
+        Positioned(
+          bottom: 16,
+          left: 16,
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.1),
+                  blurRadius: 8,
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  '📍 Your Location',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 11,
+                  ),
+                ),
+                Text(
+                  'Lat: ${_currentLocation.latitude.toStringAsFixed(4)}',
+                  style: const TextStyle(fontSize: 10),
+                ),
+                Text(
+                  'Lng: ${_currentLocation.longitude.toStringAsFixed(4)}',
+                  style: const TextStyle(fontSize: 10),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _showHospitalDetails(HospitalModel hospital) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  hospital.name,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1A1A2E),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                if (hospital.distance != null)
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.location_on_rounded,
+                        color: AppTheme.primaryColor,
+                        size: 16,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${hospital.distance!.toStringAsFixed(1)} km away',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          _openMaps(
+                            hospital.latitude,
+                            hospital.longitude,
+                            hospital.name,
+                          );
+                        },
+                        icon: const Icon(Icons.directions_rounded, size: 18),
+                        label: const Text('Directions'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppTheme.primaryColor,
+                          side: const BorderSide(color: AppTheme.primaryColor),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          _makePhoneCall(hospital.emergencyPhone ?? hospital.phone ?? '');
+                        },
+                        icon: const Icon(Icons.phone_rounded, size: 18),
+                        label: const Text('Call'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.errorColor,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -72,11 +394,22 @@ class _HospitalsScreenState extends State<HospitalsScreen> {
         ),
         actions: [
           IconButton(
+            icon: Icon(
+              _showMapView ? Icons.list_rounded : Icons.map_rounded,
+              color: AppTheme.primaryColor,
+            ),
+            onPressed: () {
+              setState(() {
+                _showMapView = !_showMapView;
+              });
+            },
+          ),
+          IconButton(
             icon: const Icon(Icons.refresh_rounded, color: AppTheme.primaryColor),
             onPressed: () {
               context.read<HospitalProvider>().fetchNearbyHospitals(
-                    widget.currentLocation.latitude,
-                    widget.currentLocation.longitude,
+                    _currentLocation.latitude,
+                    _currentLocation.longitude,
                     radiusKm: 5.0,
                   );
             },
@@ -131,8 +464,8 @@ class _HospitalsScreenState extends State<HospitalsScreen> {
                     ElevatedButton.icon(
                       onPressed: () {
                         provider.fetchNearbyHospitals(
-                          widget.currentLocation.latitude,
-                          widget.currentLocation.longitude,
+                          _currentLocation.latitude,
+                          _currentLocation.longitude,
                           radiusKm: 5.0,
                         );
                       },
@@ -211,27 +544,29 @@ class _HospitalsScreenState extends State<HospitalsScreen> {
                 ),
               ),
 
-              // Hospital list
+              // Map or List view
               Expanded(
-                child: ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                  itemCount: provider.hospitals.length,
-                  itemBuilder: (context, index) {
-                    final hospital = provider.hospitals[index];
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 16),
-                      child: _HospitalCard(
-                        hospital: hospital,
-                        onCall: () => _makePhoneCall(hospital.emergencyPhone ?? hospital.phone ?? ''),
-                        onDirections: () => _openMaps(
-                          hospital.latitude,
-                          hospital.longitude,
-                          hospital.name,
-                        ),
+                child: _showMapView
+                    ? _buildMapView(provider.hospitals)
+                    : ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                        itemCount: provider.hospitals.length,
+                        itemBuilder: (context, index) {
+                          final hospital = provider.hospitals[index];
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: _HospitalCard(
+                              hospital: hospital,
+                              onCall: () => _makePhoneCall(hospital.emergencyPhone ?? hospital.phone ?? ''),
+                              onDirections: () => _openMaps(
+                                hospital.latitude,
+                                hospital.longitude,
+                                hospital.name,
+                              ),
+                            ),
+                          );
+                        },
                       ),
-                    );
-                  },
-                ),
               ),
             ],
           );

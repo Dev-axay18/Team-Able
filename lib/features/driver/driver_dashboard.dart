@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:geolocator/geolocator.dart';
 import '../../core/providers/auth_provider.dart';
 import '../auth/login_screen.dart';
 import 'driver_map_screen.dart';
@@ -13,6 +15,11 @@ class DriverDashboard extends StatefulWidget {
 
 class _DriverDashboardState extends State<DriverDashboard> {
   bool _isOnDuty = true;
+  Position? _currentPosition;
+  GoogleMapController? _dashboardMapController;
+  
+  // Mumbai Central coordinates as default
+  static const LatLng _defaultLocation = LatLng(19.0760, 72.8777);
   
   final List<EmergencyCase> _recentCases = [
     EmergencyCase(
@@ -32,6 +39,180 @@ class _DriverDashboardState extends State<DriverDashboard> {
       status: 'Completed',
     ),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeLocation();
+  }
+
+  Future<void> _initializeLocation() async {
+    // Check if location service is enabled
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    
+    if (!serviceEnabled) {
+      return;
+    }
+
+    // Check permission
+    LocationPermission permission = await Geolocator.checkPermission();
+    
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      return;
+    }
+
+    // Get current location
+    try {
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 10),
+      );
+
+      if (mounted) {
+        setState(() {
+          _currentPosition = position;
+        });
+      }
+    } catch (e) {
+      print('Error getting location: $e');
+    }
+  }
+
+  Widget _buildEmbeddedMap() {
+    final location = _currentPosition != null
+        ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+        : _defaultLocation;
+
+    return Stack(
+      children: [
+        GoogleMap(
+          initialCameraPosition: CameraPosition(
+            target: location,
+            zoom: 13.0,
+          ),
+          onMapCreated: (GoogleMapController controller) {
+            _dashboardMapController = controller;
+          },
+          markers: {
+            Marker(
+              markerId: const MarkerId('driver_location'),
+              position: location,
+              icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+              infoWindow: InfoWindow(
+                title: 'Your Location',
+                snippet: _currentPosition != null
+                    ? 'Lat: ${_currentPosition!.latitude.toStringAsFixed(4)}, Lng: ${_currentPosition!.longitude.toStringAsFixed(4)}'
+                    : 'Central Zone',
+              ),
+            ),
+          },
+          circles: {
+            Circle(
+              circleId: const CircleId('driver_zone'),
+              center: location,
+              radius: 2000,
+              fillColor: const Color(0xFF1565C0).withOpacity(0.1),
+              strokeColor: const Color(0xFF1565C0),
+              strokeWidth: 2,
+            ),
+          },
+          myLocationEnabled: false,
+          myLocationButtonEnabled: false,
+          zoomControlsEnabled: false,
+          mapToolbarEnabled: false,
+          compassEnabled: false,
+          scrollGesturesEnabled: false,
+          zoomGesturesEnabled: false,
+          tiltGesturesEnabled: false,
+          rotateGesturesEnabled: false,
+        ),
+        
+        // Maximize button overlay
+        Positioned(
+          top: 8,
+          right: 8,
+          child: GestureDetector(
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const DriverMapScreen()),
+              );
+            },
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 4,
+                  ),
+                ],
+              ),
+              child: const Icon(
+                Icons.fullscreen,
+                color: Color(0xFF1565C0),
+                size: 20,
+              ),
+            ),
+          ),
+        ),
+        
+        // Location info overlay
+        if (_currentPosition != null)
+          Positioned(
+            bottom: 8,
+            left: 8,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(6),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 4,
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.location_on,
+                    color: Color(0xFF1565C0),
+                    size: 14,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Live Location',
+                    style: const TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF1565C0),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  @override
+  void dispose() {
+    _dashboardMapController?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -168,44 +349,12 @@ class _DriverDashboardState extends State<DriverDashboard> {
                       ),
                     ),
                     const SizedBox(height: 20),
-                    // Map placeholder
-                    Container(
-                      height: 180,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF3F4F6),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.location_on_outlined,
-                              size: 48,
-                              color: Colors.grey[400],
-                            ),
-                            const SizedBox(height: 8),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  Icons.circle,
-                                  size: 8,
-                                  color: const Color(0xFF1565C0),
-                                ),
-                                const SizedBox(width: 6),
-                                const Text(
-                                  'Central Zone',
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
-                                    color: Color(0xFF6B7280),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
+                    // Embedded Map
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: SizedBox(
+                        height: 180,
+                        child: _buildEmbeddedMap(),
                       ),
                     ),
                   ],

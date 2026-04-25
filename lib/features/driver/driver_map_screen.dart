@@ -24,49 +24,188 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
   @override
   void initState() {
     super.initState();
-    _getCurrentLocation();
     _addMockEmergencyCases();
+    _initializeLocation();
+  }
+
+  Future<void> _initializeLocation() async {
+    print('🔍 Starting location initialization...');
+    
+    // Check if location service is enabled
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    print('📍 Location service enabled: $serviceEnabled');
+    
+    if (!serviceEnabled) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showSnackBar('Please enable location services', isError: true);
+      }
+      return;
+    }
+
+    // Check permission
+    LocationPermission permission = await Geolocator.checkPermission();
+    print('🔐 Current permission: $permission');
+    
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      print('🔐 Permission after request: $permission');
+      
+      if (permission == LocationPermission.denied) {
+        if (mounted) {
+          setState(() => _isLoading = false);
+          _showSnackBar('Location permission denied', isError: true);
+        }
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showPermissionDialog();
+      }
+      return;
+    }
+
+    // Get current location
+    await _getCurrentLocation();
+    
+    // Start listening to location updates
+    _startLocationStream();
+  }
+
+  void _startLocationStream() {
+    print('🎯 Starting location stream...');
+    
+    const locationSettings = LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 5, // Update every 5 meters
+    );
+
+    Geolocator.getPositionStream(locationSettings: locationSettings).listen(
+      (Position position) {
+        print('📍 New position: ${position.latitude}, ${position.longitude}');
+        if (mounted) {
+          setState(() {
+            _currentPosition = position;
+          });
+          _updateDriverMarker(position);
+        }
+      },
+      onError: (error) {
+        print('❌ Location stream error: $error');
+      },
+    );
+  }
+
+  void _showPermissionDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Location Permission Required'),
+        content: const Text(
+          'Location permission is permanently denied. Please enable it in app settings to use live tracking.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Geolocator.openAppSettings();
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSnackBar(String message, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? Colors.red : const Color(0xFF43A047),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   Future<void> _getCurrentLocation() async {
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        setState(() => _isLoading = false);
-        return;
-      }
-
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          setState(() => _isLoading = false);
-          return;
-        }
-      }
-
+      print('📍 Getting current location...');
+      
       Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 15),
       );
 
-      setState(() {
-        _currentPosition = position;
-        _isLoading = false;
-      });
+      print('✅ Got location: ${position.latitude}, ${position.longitude}');
+      print('   Accuracy: ${position.accuracy}m');
+      print('   Altitude: ${position.altitude}m');
 
-      // Add driver marker
-      _addDriverMarker(position);
+      if (mounted) {
+        setState(() {
+          _currentPosition = position;
+          _isLoading = false;
+        });
 
-      // Move camera to current location
-      _mapController?.animateCamera(
-        CameraUpdate.newLatLngZoom(
-          LatLng(position.latitude, position.longitude),
-          14.0,
+        // Add/update driver marker
+        _updateDriverMarker(position);
+
+        // Move camera to current location
+        _mapController?.animateCamera(
+          CameraUpdate.newLatLngZoom(
+            LatLng(position.latitude, position.longitude),
+            15.0,
+          ),
+        );
+        
+        _showSnackBar('Location found: ${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}');
+      }
+    } catch (e) {
+      print('❌ Error getting location: $e');
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showSnackBar('Could not get location: $e', isError: true);
+      }
+    }
+  }
+
+  void _updateDriverMarker(Position position) {
+    setState(() {
+      // Remove old markers
+      _markers.removeWhere((m) => m.markerId.value == 'driver_location');
+      _circles.removeWhere((c) => c.circleId.value == 'driver_zone');
+      
+      // Add new marker
+      _markers.add(
+        Marker(
+          markerId: const MarkerId('driver_location'),
+          position: LatLng(position.latitude, position.longitude),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+          infoWindow: InfoWindow(
+            title: 'Your Location',
+            snippet: 'Lat: ${position.latitude.toStringAsFixed(4)}, Lng: ${position.longitude.toStringAsFixed(4)}',
+          ),
         ),
       );
-    } catch (e) {
-      setState(() => _isLoading = false);
-    }
+
+      // Add circle
+      _circles.add(
+        Circle(
+          circleId: const CircleId('driver_zone'),
+          center: LatLng(position.latitude, position.longitude),
+          radius: 2000, // 2km radius
+          fillColor: const Color(0xFF1565C0).withOpacity(0.1),
+          strokeColor: const Color(0xFF1565C0),
+          strokeWidth: 2,
+        ),
+      );
+    });
   }
 
   void _addDriverMarker(Position position) {
@@ -379,23 +518,113 @@ class _DriverMapScreenState extends State<DriverMapScreen> {
           Positioned(
             right: 16,
             bottom: 100,
-            child: FloatingActionButton(
-              onPressed: _getCurrentLocation,
-              backgroundColor: Colors.white,
-              child: const Icon(
-                Icons.my_location,
-                color: Color(0xFF1565C0),
-              ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Refresh location button
+                FloatingActionButton(
+                  heroTag: 'refresh',
+                  onPressed: _getCurrentLocation,
+                  backgroundColor: Colors.white,
+                  mini: true,
+                  child: const Icon(
+                    Icons.refresh,
+                    color: Color(0xFF1565C0),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                // My location button
+                FloatingActionButton(
+                  heroTag: 'location',
+                  onPressed: () {
+                    if (_currentPosition != null) {
+                      _mapController?.animateCamera(
+                        CameraUpdate.newLatLngZoom(
+                          LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+                          15.0,
+                        ),
+                      );
+                    } else {
+                      _getCurrentLocation();
+                    }
+                  },
+                  backgroundColor: Colors.white,
+                  child: const Icon(
+                    Icons.my_location,
+                    color: Color(0xFF1565C0),
+                  ),
+                ),
+              ],
             ),
           ),
 
-          // Loading indicator
+          // Loading/Status indicator
           if (_isLoading)
             Container(
               color: Colors.black.withOpacity(0.3),
               child: const Center(
-                child: CircularProgressIndicator(
-                  color: Color(0xFF1565C0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(
+                      color: Color(0xFF1565C0),
+                    ),
+                    SizedBox(height: 16),
+                    Text(
+                      'Getting your location...',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          
+          // Debug info (remove in production)
+          if (_currentPosition != null)
+            Positioned(
+              bottom: 20,
+              left: 20,
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 8,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      '📍 Your Location:',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Lat: ${_currentPosition!.latitude.toStringAsFixed(6)}',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                    Text(
+                      'Lng: ${_currentPosition!.longitude.toStringAsFixed(6)}',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                    Text(
+                      'Accuracy: ${_currentPosition!.accuracy.toStringAsFixed(1)}m',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ],
                 ),
               ),
             ),

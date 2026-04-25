@@ -15,8 +15,9 @@ class OtpService {
 
   /// Generates a 4-digit OTP, stores it, and "sends" it.
   /// Returns the OTP string (for dev/demo — remove in production).
+  /// FIXED TO ALWAYS BE "1234" FOR EASY TESTING
   String generateAndSend(String phone) {
-    final otp = _generateOtp();
+    const otp = '1234'; // FIXED OTP FOR TESTING
     _store[phone] = _OtpEntry(
       otp: otp,
       expiresAt: DateTime.now().add(

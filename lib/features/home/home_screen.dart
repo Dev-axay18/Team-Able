@@ -1,16 +1,16 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geolocator_android/geolocator_android.dart';
 import 'package:provider/provider.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/providers/auth_provider.dart';
 import '../../core/services/cpin_service.dart';
 import 'ambulance_severity_screen.dart';
 import '../hospitals/hospitals_screen.dart';
+import 'sos_dispatch_screen.dart';
+import 'package:latlong2/latlong.dart' as ll;
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -29,11 +29,12 @@ class _HomeScreenState extends State<HomeScreen>
   bool _sosActive = false;
   SosSession? _activeSosSession;
 
-  // Location
+  // Location — using Google Maps LatLng
   LatLng _currentLocation = const LatLng(19.0760, 72.8777); // Mumbai default
   bool _locationLoaded = false;
   bool _highAccuracy = false;
-  final MapController _mapController = MapController();
+  final Completer<GoogleMapController> _mapControllerCompleter = Completer();
+  GoogleMapController? _googleMapController;
   StreamSubscription<Position>? _positionStream;
   String _locationAddress = 'Fetching location...';
 
@@ -50,93 +51,126 @@ class _HomeScreenState extends State<HomeScreen>
     _initLocation();
   }
 
+  // Helper: move camera safely — waits for map controller to be ready
+  Future<void> _moveCamera(LatLng target, {double zoom = 16.0}) async {
+    final controller = await _mapControllerCompleter.future;
+    await controller.animateCamera(
+      CameraUpdate.newLatLngZoom(target, zoom),
+    );
+  }
+
+  // Set emulator mock location via adb (for testing)
+  Future<void> _setEmulatorLocation() async {
+    // Bangalore coordinates as test location
+    const testLat = 12.9716;
+    const testLng = 77.5946;
+    final loc = LatLng(testLat, testLng);
+    setState(() {
+      _currentLocation = loc;
+      _locationLoaded = true;
+      _highAccuracy = true;
+      _locationAddress = '$testLat, $testLng (Test Location)';
+    });
+    await _moveCamera(loc, zoom: 16.0);
+  }
+
   Future<void> _initLocation() async {
     try {
-      // Check if location services are enabled
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      // Step 1: Check if location service is ON
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        _showLocationServiceDialog();
+        if (mounted) _showLocationServiceDialog();
         return;
       }
 
-      // Check & request foreground permission first
+      // Step 2: Check/request permission
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          _showPermissionDeniedDialog();
-          return;
-        }
       }
-
-      if (permission == LocationPermission.deniedForever) {
-        _showPermissionPermanentlyDeniedDialog();
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          permission == LocationPermission.deniedForever
+              ? _showPermissionPermanentlyDeniedDialog()
+              : _showPermissionDeniedDialog();
+        }
         return;
       }
 
-      // Request background / always-on permission
-      if (permission == LocationPermission.whileInUse) {
-        await Geolocator.requestPermission();
-      }
-
-      // Get last known position instantly for fast first paint
-      final lastKnown = await Geolocator.getLastKnownPosition();
-      if (lastKnown != null && mounted) {
+      // Step 3: Try last known first (instant)
+      final last = await Geolocator.getLastKnownPosition();
+      if (last != null && mounted) {
+        final loc = LatLng(last.latitude, last.longitude);
         setState(() {
-          _currentLocation = LatLng(lastKnown.latitude, lastKnown.longitude);
+          _currentLocation = loc;
           _locationLoaded = true;
           _locationAddress =
-              '${lastKnown.latitude.toStringAsFixed(5)}, ${lastKnown.longitude.toStringAsFixed(5)}';
+              '${last.latitude.toStringAsFixed(5)}, ${last.longitude.toStringAsFixed(5)}';
         });
-        _mapController.move(_currentLocation, 16.0);
+        await _moveCamera(loc, zoom: 16.0);
       }
 
-      // Then get accurate current position
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.bestForNavigation,
-      );
-
-      if (mounted) {
-        setState(() {
-          _currentLocation = LatLng(position.latitude, position.longitude);
-          _locationLoaded = true;
-          _highAccuracy = position.accuracy < 20;
-          _locationAddress =
-              '${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}';
-        });
-        // Animate map to real location with zoom 16
-        _mapController.move(_currentLocation, 16.0);
-      }
-
-      // Continuous live tracking — always on, every 5m or 3 seconds
-      _positionStream = Geolocator.getPositionStream(
-        locationSettings: AndroidSettings(
-          accuracy: LocationAccuracy.bestForNavigation,
-          distanceFilter: 5,
-          forceLocationManager: false,
-          intervalDuration: const Duration(seconds: 3),
-          foregroundNotificationConfig: const ForegroundNotificationConfig(
-            notificationText:
-                'JeevanPath is tracking your location for emergency services.',
-            notificationTitle: 'JeevanPath Active',
-            enableWakeLock: true,
-            notificationIcon:
-                AndroidResource(name: 'ic_launcher', defType: 'mipmap'),
-          ),
-        ),
-      ).listen((pos) {
+      // Step 4: Get accurate current position — 15s timeout
+      try {
+        final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 15),
+        );
         if (mounted) {
+          final loc = LatLng(position.latitude, position.longitude);
           setState(() {
-            _currentLocation = LatLng(pos.latitude, pos.longitude);
-            _highAccuracy = pos.accuracy < 20;
+            _currentLocation = loc;
+            _locationLoaded = true;
+            _highAccuracy = position.accuracy < 30;
             _locationAddress =
-                '${pos.latitude.toStringAsFixed(5)}, ${pos.longitude.toStringAsFixed(5)}';
+                '${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}';
           });
-          _mapController.move(_currentLocation, 16.0);
+          await _moveCamera(loc, zoom: 16.0);
         }
-      });
+      } catch (e) {
+        debugPrint('getCurrentPosition failed: $e');
+        // If still no location, show default with message
+        if (!_locationLoaded && mounted) {
+          setState(() {
+            _locationLoaded = true;
+            _locationAddress = 'GPS signal weak — move outdoors';
+          });
+          await _moveCamera(_currentLocation, zoom: 14.0);
+        }
+      }
+
+      // Step 5: Live stream — updates every 5 metres
+      _positionStream?.cancel();
+      _positionStream = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 5,
+        ),
+      ).listen((pos) async {
+        if (!mounted) return;
+        final loc = LatLng(pos.latitude, pos.longitude);
+        setState(() {
+          _currentLocation = loc;
+          _locationLoaded = true;
+          _highAccuracy = pos.accuracy < 30;
+          _locationAddress =
+              '${pos.latitude.toStringAsFixed(5)}, ${pos.longitude.toStringAsFixed(5)}';
+        });
+        // Update SOS session
+        if (_sosActive) {
+          final user = context.read<AuthProvider>().user;
+          if (user != null) {
+            CPinService.instance.updateLocation(user.id, pos.latitude, pos.longitude);
+          }
+        }
+        // Follow device on map
+        final ctrl = await _mapControllerCompleter.future;
+        ctrl.animateCamera(CameraUpdate.newLatLng(loc));
+      }, onError: (e) => debugPrint('Location stream error: $e'));
+
     } catch (e) {
-      debugPrint('Location error: $e');
+      debugPrint('Location init error: $e');
     }
   }
 
@@ -533,13 +567,11 @@ class _HomeScreenState extends State<HomeScreen>
     _showDispatchingDialog();
   }
 
-  // ── Step 3: Show dispatching → driver assigned flow ───────────────────────
+  // ── Step 3: Show full SOS dispatch screen ────────────────────────────────
   void _showDispatchingDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        return _DispatchingDialog(
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SosDispatchScreen(
           session: _activeSosSession!,
           currentLocation: _currentLocation,
           onCancel: () {
@@ -551,10 +583,9 @@ class _HomeScreenState extends State<HomeScreen>
               _sosActive = false;
               _activeSosSession = null;
             });
-            Navigator.of(ctx).pop();
           },
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -787,7 +818,10 @@ class _HomeScreenState extends State<HomeScreen>
             context,
             MaterialPageRoute(
               builder: (_) => AmbulanceSeverityScreen(
-                currentLocation: _currentLocation,
+                currentLocation: ll.LatLng(
+                  _currentLocation.latitude,
+                  _currentLocation.longitude,
+                ),
               ),
             ),
           );
@@ -883,7 +917,10 @@ class _HomeScreenState extends State<HomeScreen>
                   context,
                   MaterialPageRoute(
                     builder: (_) => HospitalsScreen(
-                      currentLocation: _currentLocation,
+                      currentLocation: ll.LatLng(
+                        _currentLocation.latitude,
+                        _currentLocation.longitude,
+                      ),
                     ),
                   ),
                 );
@@ -907,6 +944,34 @@ class _HomeScreenState extends State<HomeScreen>
 
   // ── Map Section ──────────────────────────────────────────────────────────
   Widget _buildMapSection() {
+    // Build markers — blue dot for normal, red pulsing for SOS active
+    final Set<Marker> markers = {
+      Marker(
+        markerId: const MarkerId('my_location'),
+        position: _currentLocation,
+        icon: BitmapDescriptor.defaultMarkerWithHue(
+          _sosActive ? BitmapDescriptor.hueRed : BitmapDescriptor.hueBlue,
+        ),
+        infoWindow: InfoWindow(
+          title: _sosActive ? '🚨 SOS ACTIVE — Your Location' : '📍 Your Location',
+          snippet: _locationAddress,
+        ),
+      ),
+    };
+
+    // Coverage circle — red when SOS, blue normally
+    final Set<Circle> circles = {
+      Circle(
+        circleId: const CircleId('accuracy_circle'),
+        center: _currentLocation,
+        radius: _sosActive ? 500 : 200,
+        fillColor: (_sosActive ? const Color(0xFFD32F2F) : const Color(0xFF1565C0))
+            .withOpacity(0.12),
+        strokeColor: _sosActive ? const Color(0xFFD32F2F) : const Color(0xFF1565C0),
+        strokeWidth: 2,
+      ),
+    };
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
       child: Column(
@@ -915,25 +980,29 @@ class _HomeScreenState extends State<HomeScreen>
           // Header row
           Row(
             children: [
-              const Icon(Icons.my_location_rounded,
-                  color: Color(0xFF1A1A2E), size: 18),
+              Icon(
+                _sosActive ? Icons.emergency_rounded : Icons.my_location_rounded,
+                color: _sosActive ? const Color(0xFFD32F2F) : const Color(0xFF1A1A2E),
+                size: 18,
+              ),
               const SizedBox(width: 6),
-              const Text(
-                'Current Location',
+              Text(
+                _sosActive ? 'SOS — Live Location' : 'Current Location',
                 style: TextStyle(
                   fontSize: 15,
                   fontWeight: FontWeight.w600,
-                  color: Color(0xFF1A1A2E),
+                  color: _sosActive ? const Color(0xFFD32F2F) : const Color(0xFF1A1A2E),
                 ),
               ),
               const SizedBox(width: 10),
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: _highAccuracy
-                      ? const Color(0xFFE8F5E9)
-                      : const Color(0xFFFFF3E0),
+                  color: _sosActive
+                      ? const Color(0xFFFFEBEE)
+                      : _highAccuracy
+                          ? const Color(0xFFE8F5E9)
+                          : const Color(0xFFFFF3E0),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Row(
@@ -943,23 +1012,29 @@ class _HomeScreenState extends State<HomeScreen>
                       width: 7,
                       height: 7,
                       decoration: BoxDecoration(
-                        color: _highAccuracy
-                            ? const Color(0xFF43A047)
-                            : const Color(0xFFFFA726),
+                        color: _sosActive
+                            ? const Color(0xFFD32F2F)
+                            : _highAccuracy
+                                ? const Color(0xFF43A047)
+                                : const Color(0xFFFFA726),
                         shape: BoxShape.circle,
                       ),
                     ),
                     const SizedBox(width: 5),
                     Text(
-                      _locationLoaded
-                          ? (_highAccuracy ? 'HIGH ACCURACY' : 'LOW ACCURACY')
-                          : 'LOCATING...',
+                      _sosActive
+                          ? 'SHARING LIVE'
+                          : _locationLoaded
+                              ? (_highAccuracy ? 'HIGH ACCURACY' : 'LOW ACCURACY')
+                              : 'LOCATING...',
                       style: TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.w700,
-                        color: _highAccuracy
-                            ? const Color(0xFF43A047)
-                            : const Color(0xFFFFA726),
+                        color: _sosActive
+                            ? const Color(0xFFD32F2F)
+                            : _highAccuracy
+                                ? const Color(0xFF43A047)
+                                : const Color(0xFFFFA726),
                         letterSpacing: 0.5,
                       ),
                     ),
@@ -969,7 +1044,6 @@ class _HomeScreenState extends State<HomeScreen>
             ],
           ),
 
-          // Coordinates subtitle
           if (_locationLoaded) ...[
             const SizedBox(height: 4),
             Text(
@@ -991,71 +1065,74 @@ class _HomeScreenState extends State<HomeScreen>
               height: 240,
               child: Stack(
                 children: [
-                  // Flutter Map with OpenStreetMap tiles
-                  FlutterMap(
-                    mapController: _mapController,
-                    options: MapOptions(
-                      initialCenter: _currentLocation,
-                      initialZoom: 16.0,
-                      interactionOptions: const InteractionOptions(
-                        flags: InteractiveFlag.pinchZoom |
-                            InteractiveFlag.doubleTapZoom,
-                      ),
+                  // Google Map
+                  GoogleMap(
+                    initialCameraPosition: CameraPosition(
+                      target: _currentLocation,
+                      zoom: 16.0,
                     ),
-                    children: [
-                      TileLayer(
-                        urlTemplate:
-                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                        userAgentPackageName: 'com.jeevanpath.app',
-                        maxZoom: 19,
-                      ),
-                      MarkerLayer(
-                        markers: [
-                          Marker(
-                            point: _currentLocation,
-                            width: 44,
-                            height: 44,
-                            child: Stack(
-                              alignment: Alignment.center,
-                              children: [
-                                // Outer glow ring
-                                Container(
-                                  width: 44,
-                                  height: 44,
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF1565C0)
-                                        .withOpacity(0.2),
-                                    shape: BoxShape.circle,
-                                  ),
-                                ),
-                                // Inner dot
-                                Container(
-                                  width: 22,
-                                  height: 22,
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF1565C0),
-                                    shape: BoxShape.circle,
-                                    border: Border.all(
-                                        color: Colors.white, width: 3),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: const Color(0xFF1565C0)
-                                            .withOpacity(0.5),
-                                        blurRadius: 8,
-                                        spreadRadius: 2,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
+                    onMapCreated: (GoogleMapController controller) async {
+                      _googleMapController = controller;
+                      if (!_mapControllerCompleter.isCompleted) {
+                        _mapControllerCompleter.complete(controller);
+                      }
+                      // Immediately move to real location if already fetched
+                      if (_locationLoaded) {
+                        await controller.animateCamera(
+                          CameraUpdate.newLatLngZoom(_currentLocation, 16.0),
+                        );
+                      }
+                    },
+                    markers: markers,
+                    circles: circles,
+                    myLocationEnabled: true,
+                    myLocationButtonEnabled: false,
+                    zoomControlsEnabled: false,
+                    mapToolbarEnabled: false,
+                    compassEnabled: false,
+                    scrollGesturesEnabled: true,
+                    zoomGesturesEnabled: true,
                   ),
 
-                  // Loading overlay — shown until real location arrives
+                  // SOS active banner at top of map
+                  if (_sosActive)
+                    Positioned(
+                      top: 10,
+                      left: 10,
+                      right: 50,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFD32F2F),
+                          borderRadius: BorderRadius.circular(10),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.2),
+                              blurRadius: 8,
+                            ),
+                          ],
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.emergency_rounded,
+                                color: Colors.white, size: 14),
+                            SizedBox(width: 6),
+                            Text(
+                              'SOS ACTIVE — Sharing live location',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                  // Loading overlay
                   if (!_locationLoaded)
                     Container(
                       color: Colors.white.withOpacity(0.85),
@@ -1081,7 +1158,7 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                     ),
 
-                  // Estimated response time card at bottom
+                  // Bottom info card
                   Positioned(
                     bottom: 10,
                     left: 10,
@@ -1104,19 +1181,25 @@ class _HomeScreenState extends State<HomeScreen>
                           Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text(
-                                'Estimated Response Time',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.grey,
-                                ),
+                              Text(
+                                _sosActive
+                                    ? 'Ambulance Dispatched'
+                                    : 'Estimated Response Time',
+                                style: const TextStyle(
+                                    fontSize: 11, color: Colors.grey),
                               ),
                               Text(
-                                _locationLoaded ? '4 mins away' : 'Calculating...',
-                                style: const TextStyle(
+                                _sosActive
+                                    ? 'En route to your location'
+                                    : _locationLoaded
+                                        ? '4 mins away'
+                                        : 'Calculating...',
+                                style: TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w700,
-                                  color: Color(0xFF1A1A2E),
+                                  color: _sosActive
+                                      ? const Color(0xFFD32F2F)
+                                      : const Color(0xFF1A1A2E),
                                 ),
                               ),
                             ],
@@ -1125,13 +1208,19 @@ class _HomeScreenState extends State<HomeScreen>
                           Container(
                             padding: const EdgeInsets.all(8),
                             decoration: BoxDecoration(
-                              color:
-                                  const Color(0xFF1565C0).withOpacity(0.1),
+                              color: (_sosActive
+                                      ? const Color(0xFFD32F2F)
+                                      : const Color(0xFF1565C0))
+                                  .withOpacity(0.1),
                               borderRadius: BorderRadius.circular(8),
                             ),
-                            child: const Icon(
-                              Icons.directions_car_rounded,
-                              color: Color(0xFF1565C0),
+                            child: Icon(
+                              _sosActive
+                                  ? Icons.emergency_rounded
+                                  : Icons.directions_car_rounded,
+                              color: _sosActive
+                                  ? const Color(0xFFD32F2F)
+                                  : const Color(0xFF1565C0),
                               size: 22,
                             ),
                           ),
@@ -1140,30 +1229,66 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                   ),
 
-                  // Recenter button
+                  // Recenter + Maximize buttons
                   Positioned(
                     top: 10,
                     right: 10,
-                    child: GestureDetector(
-                      onTap: () {
-                        _mapController.move(_currentLocation, 16.0);
-                      },
-                      child: Container(
-                        width: 36,
-                        height: 36,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(8),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.1),
-                              blurRadius: 6,
+                    child: Column(
+                      children: [
+                        // Recenter / refresh location
+                        GestureDetector(
+                          onTap: () async {
+                            await _initLocation();
+                          },
+                          child: Container(
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.1),
+                                  blurRadius: 6,
+                                ),
+                              ],
                             ),
-                          ],
+                            child: const Icon(Icons.my_location_rounded,
+                                color: Color(0xFF1565C0), size: 18),
+                          ),
                         ),
-                        child: const Icon(Icons.my_location_rounded,
-                            color: Color(0xFF1565C0), size: 18),
-                      ),
+                        const SizedBox(height: 6),
+                        // Maximize
+                        GestureDetector(
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => _FullScreenPatientMap(
+                                  initialLocation: _currentLocation,
+                                  sosActive: _sosActive,
+                                ),
+                              ),
+                            );
+                          },
+                          child: Container(
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.1),
+                                  blurRadius: 6,
+                                ),
+                              ],
+                            ),
+                            child: const Icon(Icons.fullscreen,
+                                color: Color(0xFF1565C0), size: 18),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -1245,280 +1370,295 @@ class _QuickActionCard extends StatelessWidget {
   }
 }
 
-// ── Dispatching Dialog Widget ─────────────────────────────────────────────────
-class _DispatchingDialog extends StatefulWidget {
-  final SosSession session;
-  final LatLng currentLocation;
-  final VoidCallback onCancel;
+// ── Full-Screen Patient Map ───────────────────────────────────────────────────
+class _FullScreenPatientMap extends StatefulWidget {
+  final LatLng initialLocation;
+  final bool sosActive;
 
-  const _DispatchingDialog({
-    required this.session,
-    required this.currentLocation,
-    required this.onCancel,
+  const _FullScreenPatientMap({
+    required this.initialLocation,
+    required this.sosActive,
   });
 
   @override
-  State<_DispatchingDialog> createState() => _DispatchingDialogState();
+  State<_FullScreenPatientMap> createState() => _FullScreenPatientMapState();
 }
 
-class _DispatchingDialogState extends State<_DispatchingDialog> {
-  // Simulated dispatch stages
-  int _stage = 0;
-  // 0 = searching driver
-  // 1 = driver found
-  // 2 = en route
-  Timer? _stageTimer;
-
-  final List<_DispatchStage> _stages = const [
-    _DispatchStage(
-      icon: Icons.search_rounded,
-      color: Color(0xFFFFA726),
-      title: 'Finding nearest ambulance...',
-      subtitle: 'Searching drivers in your area',
-    ),
-    _DispatchStage(
-      icon: Icons.local_shipping_rounded,
-      color: Color(0xFF1565C0),
-      title: 'Driver Assigned!',
-      subtitle: 'Ambulance #KA-01-AB-1234 • Ravi Kumar',
-    ),
-    _DispatchStage(
-      icon: Icons.directions_car_rounded,
-      color: Color(0xFF43A047),
-      title: 'Ambulance En Route',
-      subtitle: 'Estimated arrival: 4 minutes',
-    ),
-  ];
+class _FullScreenPatientMapState extends State<_FullScreenPatientMap> {
+  GoogleMapController? _mapController;
+  LatLng _currentLocation = const LatLng(19.0760, 72.8777);
+  bool _sosActive = false;
+  StreamSubscription<Position>? _stream;
 
   @override
   void initState() {
     super.initState();
-    // Auto-advance stages to simulate real dispatch
-    _stageTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted) setState(() => _stage = 1);
-      _stageTimer = Timer(const Duration(seconds: 3), () {
-        if (mounted) setState(() => _stage = 2);
-      });
+    _currentLocation = widget.initialLocation;
+    _sosActive = widget.sosActive;
+    _startTracking();
+  }
+
+  void _startTracking() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) return;
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) return;
+    }
+    if (permission == LocationPermission.deniedForever) return;
+
+    // Get current position immediately
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 10),
+      );
+      if (mounted) {
+        setState(() => _currentLocation = LatLng(pos.latitude, pos.longitude));
+        _mapController?.animateCamera(
+          CameraUpdate.newLatLngZoom(_currentLocation, 16.0),
+        );
+      }
+    } catch (_) {}
+
+    // Stream updates
+    _stream = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 5,
+      ),
+    ).listen((pos) {
+      if (mounted) {
+        setState(() => _currentLocation = LatLng(pos.latitude, pos.longitude));
+        _mapController?.animateCamera(
+          CameraUpdate.newLatLng(_currentLocation),
+        );
+      }
     });
   }
 
   @override
   void dispose() {
-    _stageTimer?.cancel();
+    _stream?.cancel();
+    _mapController?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final stage = _stages[_stage];
+    final Set<Marker> markers = {
+      Marker(
+        markerId: const MarkerId('my_location'),
+        position: _currentLocation,
+        icon: BitmapDescriptor.defaultMarkerWithHue(
+          _sosActive ? BitmapDescriptor.hueRed : BitmapDescriptor.hueBlue,
+        ),
+        infoWindow: InfoWindow(
+          title: _sosActive ? '🚨 SOS ACTIVE — Your Location' : '📍 Your Location',
+          snippet:
+              'Lat: ${_currentLocation.latitude.toStringAsFixed(5)}, Lng: ${_currentLocation.longitude.toStringAsFixed(5)}',
+        ),
+      ),
+    };
 
-    return Dialog(
-      shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-      backgroundColor: Colors.white,
-      child: Padding(
-        padding: const EdgeInsets.all(28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Animated status icon
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 400),
-              child: Container(
-                key: ValueKey(_stage),
-                width: 72,
-                height: 72,
-                decoration: BoxDecoration(
-                  color: stage.color.withOpacity(0.12),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(stage.icon, color: stage.color, size: 36),
-              ),
+    final Set<Circle> circles = {
+      Circle(
+        circleId: const CircleId('accuracy_circle'),
+        center: _currentLocation,
+        radius: _sosActive ? 500 : 200,
+        fillColor: (_sosActive
+                ? const Color(0xFFD32F2F)
+                : const Color(0xFF1565C0))
+            .withOpacity(0.12),
+        strokeColor:
+            _sosActive ? const Color(0xFFD32F2F) : const Color(0xFF1565C0),
+        strokeWidth: 2,
+      ),
+    };
+
+    return Scaffold(
+      body: Stack(
+        children: [
+          // Google Map — full screen
+          GoogleMap(
+            initialCameraPosition: CameraPosition(
+              target: _currentLocation,
+              zoom: 16.0,
             ),
+            onMapCreated: (c) {
+              _mapController = c;
+              c.animateCamera(
+                CameraUpdate.newLatLngZoom(_currentLocation, 16.0),
+              );
+            },
+            markers: markers,
+            circles: circles,
+            myLocationEnabled: true,
+            myLocationButtonEnabled: false,
+            zoomControlsEnabled: false,
+            mapToolbarEnabled: false,
+            compassEnabled: true,
+          ),
 
-            const SizedBox(height: 16),
-
-            // SOS ID
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-              decoration: BoxDecoration(
-                color: const Color(0xFFD32F2F).withOpacity(0.08),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(
-                'SOS ID: ${widget.session.sessionId.substring(4, 17)}',
-                style: const TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFFD32F2F),
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 14),
-
-            // Status title
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 300),
-              child: Text(
-                stage.title,
-                key: ValueKey('title_$_stage'),
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                  color: Color(0xFF1A1A2E),
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 6),
-
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 300),
-              child: Text(
-                stage.subtitle,
-                key: ValueKey('sub_$_stage'),
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 13,
-                  color: Color(0xFF6B7280),
-                  height: 1.4,
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            // Progress steps
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: List.generate(3, (i) {
-                return AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  margin: const EdgeInsets.symmetric(horizontal: 4),
-                  width: i == _stage ? 24 : 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: i <= _stage
-                        ? const Color(0xFFD32F2F)
-                        : const Color(0xFFE5E7EB),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                );
-              }),
-            ),
-
-            const SizedBox(height: 20),
-
-            // Location being shared info
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: const Color(0xFFE8F5E9),
-                borderRadius: BorderRadius.circular(12),
-              ),
+          // Top bar
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
-                  const Icon(Icons.location_on_rounded,
-                      color: Color(0xFF43A047), size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Live location shared with driver',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: Color(0xFF2E7D32),
-                          ),
-                        ),
-                        Text(
-                          '${widget.currentLocation.latitude.toStringAsFixed(5)}, '
-                          '${widget.currentLocation.longitude.toStringAsFixed(5)}',
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: Color(0xFF43A047),
-                            fontFamily: 'monospace',
-                          ),
+                  // Back
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.1),
+                          blurRadius: 8,
                         ),
                       ],
                     ),
+                    child: IconButton(
+                      icon: const Icon(Icons.close, color: Color(0xFF1A1A2E)),
+                      onPressed: () => Navigator.pop(context),
+                    ),
                   ),
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: const BoxDecoration(
-                      color: Color(0xFF43A047),
-                      shape: BoxShape.circle,
+                  const SizedBox(width: 12),
+                  // Title
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: _sosActive
+                            ? const Color(0xFFD32F2F)
+                            : Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 8,
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _sosActive
+                                ? Icons.emergency_rounded
+                                : Icons.my_location_rounded,
+                            color: _sosActive
+                                ? Colors.white
+                                : const Color(0xFF1565C0),
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            _sosActive
+                                ? 'SOS ACTIVE — Live Location'
+                                : 'Your Live Location',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: _sosActive
+                                  ? Colors.white
+                                  : const Color(0xFF1A1A2E),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
+          ),
 
-            const SizedBox(height: 20),
-
-            // Done / Cancel buttons
-            Row(
+          // Buttons (bottom right)
+          Positioned(
+            right: 16,
+            bottom: 100,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: widget.onCancel,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFFD32F2F),
-                      side: const BorderSide(color: Color(0xFFD32F2F)),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                    ),
-                    child: const Text(
-                      'Cancel SOS',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF43A047),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                    ),
-                    child: const Text(
-                      'Track',
-                      style: TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.w700),
-                    ),
-                  ),
+                FloatingActionButton(
+                  heroTag: 'fs_recenter',
+                  mini: true,
+                  backgroundColor: Colors.white,
+                  onPressed: () {
+                    _mapController?.animateCamera(
+                      CameraUpdate.newLatLngZoom(_currentLocation, 16.0),
+                    );
+                  },
+                  child: const Icon(Icons.my_location,
+                      color: Color(0xFF1565C0)),
                 ),
               ],
             ),
-          ],
-        ),
+          ),
+
+          // Live coords (bottom left)
+          Positioned(
+            bottom: 20,
+            left: 20,
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 8,
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        _sosActive
+                            ? Icons.emergency_rounded
+                            : Icons.location_on,
+                        color: _sosActive
+                            ? const Color(0xFFD32F2F)
+                            : const Color(0xFF1565C0),
+                        size: 14,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _sosActive ? 'SOS Location' : 'Live Location',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 11,
+                          color: _sosActive
+                              ? const Color(0xFFD32F2F)
+                              : const Color(0xFF1565C0),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Lat: ${_currentLocation.latitude.toStringAsFixed(6)}',
+                    style: const TextStyle(fontSize: 10),
+                  ),
+                  Text(
+                    'Lng: ${_currentLocation.longitude.toStringAsFixed(6)}',
+                    style: const TextStyle(fontSize: 10),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
-}
-
-class _DispatchStage {
-  final IconData icon;
-  final Color color;
-  final String title;
-  final String subtitle;
-
-  const _DispatchStage({
-    required this.icon,
-    required this.color,
-    required this.title,
-    required this.subtitle,
-  });
 }
